@@ -1,0 +1,244 @@
+---
+title: "Data acquisition and cleaning"
+author: "Armando Guereca"
+date: "December 10, 2015"
+output: html_document
+---
+
+
+```{r echo=FALSE, message=FALSE}
+# Load common functions and variables
+source('../shared/common.R', chdir=T)
+source('../shared/tokenizer.R', chdir=T)
+
+# Library dependencies
+library(NLP)
+library(tm)
+library(doParallel)
+```
+
+
+###Objectives
+
+Around the world, people are spending an increasing amount of time on their mobile devices for email, social networking, banking and a whole range of other activities. But typing on mobile devices can be a serious pain. SwiftKey, our corporate partner in this capstone, builds a smart keyboard that makes it easier for people to type on their mobile devices. One cornerstone of their smart keyboard is predictive text models. When someone types:
+
+*I went to the*
+
+the keyboard presents three options for what the next word might be. For example, the three words might be *gym, store, restaurant*. In this capstone project we will work on understanding and building predictive text models like those used by SwiftKey.
+
+The final deliverable on on this project will be a Shiny app that takes as input a phrase (multiple words), one clicks submit, and it predicts the next word; Along with its supporting material comprising of exploratory analysis, predictive models and its companion slide deck pitching the algorithm.
+
+
+##About our data sources
+
+The data that we are going to use is from a corpus called [HC Corpora](www.corpora.heliohost.org). See the readme file at <http://www.corpora.heliohost.org/aboutcorpus.html> for details on the corpora available.
+
+Initial data exploration and modeling steps should be performed on a version of this dataset provided by [Coursera](`r urlCapstoneDataset`)
+
+First task is to obtain the data and unzip it:
+
+```{r}
+# Download Coursera Capstone Dataset
+if (!file.exists(localCapstoneDataset)) {
+    download.file(urlCapstoneDataset, localCapstoneDataset, method='curl')
+}
+# Unzip Coursera Capstone Dataset
+if (!dir.exists(finalDataDir)) {
+    unzip(localCapstoneDataset, exdir = dataDir)
+}
+```
+
+Decompressed  dataset creates a directory *final* under our *data* path, on it four folders represent the locales *en_US*, *de_DE*, *ru_RU* and *fi_FI*, each of them contain the three files *LOCALE.blogs.txt*, *LOCALE.news.txt* and *LOCALE.twitter.txt*, those will be our raw data sources.
+
+```{r}
+# Show number of lines, words and bytes for each file under 'en_US' locale
+(wlb_counts <- system(paste('wc', filePath('*.txt', 'en_US')), intern=TRUE))
+wlb_counts <- matrix(unlist(strsplit(trimws(wlb_counts), ' ')), nrow=4)
+```
+
+All files have roughly the same number of words (~33 million), lets get the ratio of words per line:
+
+```{r}
+rbind(c(sourcesMedia, 'total'),
+      round(as.numeric(wlb_counts[2, ])/as.numeric(wlb_counts[1, ]), 2))
+```
+
+From this is evident that *blogs* has fewer lines but with more words on each, and *twitter* has more than double of lines but each is on average half shorter, while *news* comes to represent a balance of both metrics.
+
+This quantitative evidence is supported by the empirical fact that writing styles on those three mediums differ not only on the richness of language and its syntactic rules but also on the demographics of its audience and authors, this heterogeneity is valuable and aligned with our goals, since we can expect the same diversity among the potential users of our model. Given this we are going to consider the three files under each language as if they where a single datasource, differentiating them only when appropiate.
+
+
+##Exploratory analysis
+
+Lets have a quick look to some lines of our data to set us in context:
+```{r}
+readLines(filePath('news.txt', 'en_US'), 5)
+```
+
+Given that our interest is to predict the next word for on an incomplete sentence, our next step should be to transform our datasources into clearly defined sentences that can be later used for prediction, we do this on the tokenization stage.
+
+To exemplify the need to perform proper data cleaning before tokenization, lets see line `615492` of file `r filePath('blogs.txt', 'en_US')`:
+
+```{r}
+system(paste("sed '615492!d'", filePath('blogs.txt', 'en_US')), intern=TRUE)
+```
+
+In this case sentence start with an uncommon ASCII character for blank space, if not removed ngrams will include it incorrectly as a token. As this, many similar situations arise across our data, for this reason on our tokenization stage we will focus the effor on selecting tokens with printable characters and identifying sentences.
+
+###Tokenization
+
+We have created the function `tokenizer(file, output, n_lines=-1, verbose=F)`, available under the `shared` directory, although is conveniently documented we are going to describe here how each data trasformation aligns with our objectives.
+
+
+Due to the heavy computational load required to process large text files as in our scenario, our function `tokenizer` makes use of the `doParallel` package in order to take advantage of as much CPU available on a multicore computer; For convenience while debugging the max number of lines to read from source file can be set with argument `n_lines`, also the `verbose` argument defines if debug info is required from the parallel processes.
+
+
+Each parallel process takes a line from input file and performs the following data transformations:
+
+* Lower case: To normalize words and potentially reduce total number of tokens
+* Expand contractions: Words like `can't` are expanded to `can not`, this will be useful on prediction and to normalize n-grams. Details on the function that performs this can be found in file `contractions.R`
+* Noisy tokens: Due to the origins of our datasources, some text is not useful for our prediction so we remove it to reduce any bias in our models.
+    + emails: Removes text like _some\@email.com_
+    + links: Removes text like *'http://some.site.com'*
+    + Hex value: Removes text like _#f1e2a3_ or _#abc_ that usually represents colors
+    + Numbers and tabs: Any remainig number and space-like character, since those are not valuable for prediction.
+    + Hyphenated words: Splits text like _long-term_
+* Double spaces: Enforce words to be separated only by sigle space
+
+
+After those transformations, remaining text is splitted by any punctuation symbol since those are likely to indicate the end of a sencence and we don't want to mistakenly predict as next word what really is the beginning of a new sentence; We recognize the greediness of our approach but   this sentence sp We then return a list of sentences of at least 2 words, this is because single word sentences don't add value to our prediction.
+
+
+Tokenized datasets are then written into output file, this is how to tokenize source files of the `en_US` locale:
+
+```{r}
+for (media in sourcesMedia) {
+#for (media in c('blogs')) {
+    if (!file.exists(filePath(paste(media,'tokens', sep='.'), 'en_US'))) {
+        # Time tokenization to have a reference of processing duration
+        print(paste(media, system.time(
+            {tokenizer(filePath(paste(media,'txt', sep='.'), 'en_US'),
+                       filePath(paste(media,'tokens', sep='.'), 'en_US'))}
+            ), sep=' - '))
+    }
+}
+```
+
+Lets see a sample result of our tokenization:
+```{r}
+readLines(filePath('news.tokens', 'en_US'), 10)
+```
+
+Results are promising despite of letter `s` being considered as a word; This and other residual issues will be taken care of on the next processing stages.
+
+Is worth noting that even though stemming is a common pre-processing strategy on NLP, we are not going to perform it on our dataset since it will have a negative impact in the quality of our predictions, for example the phrase *the house was burned* might be predicted as *the house was burn* in the best case, which is gramatically incorrect. Similarly, another common approach is to remove *stopwords* but we are not going to do so, since those might be an integral part of our prediction n-grams. An additional transformation that could be performed is *spelling correction*, but we have opted not do so since we are expecting to use the most popular n-grams for our predictions and will be highly unlikely to see misspellings making the cut.
+
+In the case of profanity detection, we have chosen to detect it after the working set of n-grams has been selected, reason for it is that is likely that n-grams containing profanity won't have the frequency required to be taken into consideration and even if some happen to be part of the selected set then is more optimal to filter that smaller set of tokens instead to processing the whole corpus, this approach can also be of benefit in case that such profanity list needs to be updated.
+
+Our tokenization approach is far from perfect, a careful reader might have noticed that we have ignored language features as abrevations and neglected any effort of entity extraction which otherwise would lead to a higher quality tokenized set. Our reasoning has been that while this efforts might yield to better prediction, we estimate the quantitative improvement of them as negligible for our purposes; This asumptions should be (relatively) easily validated once our prediction approach is completed.
+
+
+###Term frequencies
+
+In the process to extract ngrams from the source files, we encountered a number of challenges directly related to the size of our datasources, although processing a randomized subset of them was posible, we decided to spent time finding more optimal alternatives that allow us to use in full our available data since always more training data will yield higher quality predictions. 
+
+Following is a recapitulation of the main approaches we took on this task, the code used on each of them is available on the file `ngrammer.R` under the `shared` directory
+
+#### Approach 1 : Using RWeka and tm packages to generate TermDocumentMatrix(es)
+
+Given that our data sources are text files of manageable size (~580MB), we consider using the [R package `tm`](https://cran.r-project.org/web/packages/tm/index.html), and RWeka to extract ngrams and their frequencies.
+
+For this we created the functions `ngramifyAll` and `ngrammer` that generate TermDocumentMatrix for each ngram size and media source file.
+
+The reason why this approach was discarded is its total run time, on a MacBookPro 2013 with 16 GB took ~41hr only to generate the TDM for the 'blogs' ngrams, even after using `doParallel` package to execute on 7 cores.
+
+
+#### Approach 2: Parallelized unix script using associative arrays to generate ngrams.
+
+Inspired on a [script found on StackOverflow](http://stackoverflow.com/questions/14410478/can-ngrams-be-generated-in-bash), this approach makes use of parallel bash processes over the splitted dataset to generate ngram frequencies, we also developed a method to aggregate the intermediate ngram frequencies per chunk into a final file.
+
+Although it look promissing at the beginning and the ability to split source files and process them separatedly is an improvement, this approach was also discarded due to its long run time, it took ~29hr on a MacBook Pro 2013, using 7 cores, only for 'blogs' ngrams. This at least gave us chance to have data to use as comparision with the others, confirming the correctness of end result. 
+
+
+#### Approach 3: Unix script based on 'paste' to generate ngram files.
+
+Based on [this solution](http://gibrown.com/2013/01/26/unix-bi-grams-tri-grams-and-topic-modeling/), this approach makes use of the UNIX tool `paste` to generate ngrams by means of concatenating alternated file lines, is the fastest approach; Using only 1 core takes ~1.25hr for 'blogs' ngrams, same time on all sources using 3 cores (one process per media type), and can even be optimized to run in ~15 min per source with further parallelization. As with the rest of the approaches code for it is available on the `ngrammer.R` file under the `shared` code directory.
+
+The following ngram frequency analysis makes use of the data generated by this approach.
+
+*NOTE*: An important fact about our generated ngrams is that we have deliveratedly included special sentence separators in order to identify ngrams that occur at the beginning and end of sentences, this might prove helpful at the preduction stage when for example the user types a "," that way we can also predict words that usually start a sentence. 
+
+How many ngrams by size where generated?
+
+```{r}
+# Unigrams
+(unigram_counts <- system(paste("find '", filePath('', 'en_US'), "' -name '*.1grams' | xargs wc -l", sep=''), intern=TRUE)[-5])
+unigram_counts <- matrix(unlist(strsplit(trimws(unigram_counts), ' ')), nrow=2)
+
+# Bigrams
+(bigram_counts <- system(paste("find '", filePath('', 'en_US'), "' -name '*.2grams' | xargs wc -l", sep=''), intern=TRUE)[-5])
+bigram_counts <- matrix(unlist(strsplit(trimws(bigram_counts), ' ')), nrow=2)
+
+# Trigrams
+(trigram_counts <- system(paste("find '", filePath('', 'en_US'), "' -name '*.3grams' | xargs wc -l", sep=''), intern=TRUE)[-5])
+trigram_counts <- matrix(unlist(strsplit(trimws(trigram_counts), ' ')), nrow=2)
+
+# Quadrigrams
+(quadrigram_counts <- system(paste("find '", filePath('', 'en_US'), "' -name '*.4grams' | xargs wc -l", sep=''), intern=TRUE)[-5])
+quadrigram_counts <- matrix(unlist(strsplit(trimws(quadrigram_counts), ' ')), nrow=2)
+```
+
+
+```{r, cache=TRUE, echo=FALSE}
+#Let's now load our ngram frequencies into R for analysis. (This will take time due to the size of the data)
+#all_unigrams <- read.delim(filePath('all_sources.1grams', 'en_US'), sep=' ', col.names = c('count', 'token1'), header=FALSE)
+#all_bigrams <- read.delim(filePath('all_sources.2grams', 'en_US'), sep=' ', col.names = c('count', 'token1', 'token2'), header=FALSE)
+#all_trigrams <- read.delim(filePath('all_sources.3grams', 'en_US'), sep=' ', col.names = c('count', 'token1', 'token2', 'token3'), header=FALSE)
+#all_quadrigrams <- read.delim(filePath('all_sources.4grams', 'en_US'), sep=' ', col.names = c('count', 'token1', 'token2', 'token3', 'token4'), header=FALSE)
+```
+
+
+Most of the files seem to have tens of million of ngrams, their frequency distribution is expected to be exponential, for validation lets plot hitograms of their counts:
+
+```{r, cache=TRUE, fig.height=5, fig.width=10, fig.align='center'}
+par(mfcol = c(1,4))
+hist(log10(read.table(pipe(paste("awk '{print $1}' ", filePath('all_sources.1grams', 'en_US'))))$V1), main= "Unigram", xlab="log10(count)", col="blue")
+hist(log10(read.table(pipe(paste("awk '{print $1}' ", filePath('all_sources.2grams', 'en_US'))))$V1), main= "Bigram", xlab="", ylab="", col="blue")
+hist(log10(read.table(pipe(paste("awk '{print $1}' ", filePath('all_sources.3grams', 'en_US'))))$V1), main= "Trigram", xlab="", ylab="", col="blue")
+hist(log10(read.table(pipe(paste("awk '{print $1}' ", filePath('all_sources.4grams', 'en_US'))))$V1), main= "Quadrigram", xlab="", ylab="", col="blue")
+```
+
+We then see the need to identify only a number of ngrams that give us a 90% coverage, this way we'll eliminate infrecuent terms and reduce memory footprint of out models.
+
+Which are the top 10 ngrams for each length, excluding sentence separators?:
+
+```{r}
+system(paste("grep -v '<'", filePath('all_sources.1grams', 'en_US'), "| head "), intern = TRUE)
+system(paste("grep -v '<'", filePath('all_sources.2grams', 'en_US'), "| head "), intern = TRUE)
+system(paste("grep -v '<'", filePath('all_sources.3grams', 'en_US'), "| head "), intern = TRUE)
+system(paste("grep -v '<'", filePath('all_sources.4grams', 'en_US'), "| head "), intern = TRUE)
+```
+
+### Next steps:
+
+We'll continue working on the analysis of ngram frequencies with the objective to identify efective ways to discriminate infrecuent ngrams but keeping those that even if are infrequent might still convey value.
+
+We'll also continue building the preduction models required for the Shiny application, e have already found very valuable insights on how to do this by studying the *Language Modeling* section of the [*Natural Language Processing* course](https://class.coursera.org/nlp/lecture) offered by Stanford in Coursera. Specifically we are in the process of evaluating the different smoothing approaches in cunjunction with the aforementioned ngram frequency analysis. Our objective has been to spent as much time as needed tocreate a training dataset of best quality posible in order to improve the expected prediction acuracy of our models.
+
+***
+
+
+###Notes:
+Refer to code file `common.R` for details on custom variables and functions used through this document.
+
+
+
+###References:
+I. Feinerer. Introduction to the tm Package. July 3 2015. URL <https://cran.r-project.org/web/packages/tm/vignettes/tm.pdf>.
+
+
+I. Feinerer, K. Hornik, and D. Meyer. Text mining infrastructure in R. Journal of Statistical Software, 25(5):
+1–54, March 2008. ISSN 1548-7660. URL <http://www.jstatsoft.org/v25/i05>.
+
+
+S. Weston, and Rich Calaway. Getting Started with doParallel and foreach, October 12 2015. URL <https://cran.r-project.org/web/packages/doParallel/vignettes/gettingstartedParallel.pdf>

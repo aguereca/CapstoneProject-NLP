@@ -11,3 +11,10 @@
 # produced vignettes
 vignettes/*.html
 vignettes/*.pdf
+
+# Data files
+data/*.zip
+data/final/*
+
+# Cache
+*_cache/*

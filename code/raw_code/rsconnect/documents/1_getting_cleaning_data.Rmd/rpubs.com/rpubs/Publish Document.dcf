@@ -1,0 +1,7 @@
+name: Publish Document
+account: rpubs
+server: rpubs.com
+bundleId:
+        https://api.rpubs.com/api/v1/document/139460/2f03a345212a4334b86d6adbf146b532
+url: http://rpubs.com/aguereca/139460
+when: 1451434769.83872

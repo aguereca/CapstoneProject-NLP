@@ -1,0 +1,373 @@
+---
+title: "Data modeling - WORK IN PROGRESS"
+author: "Armando Guereca"
+date: "Jan 2, 2016"
+output: html_document
+---
+
+
+```{r echo=FALSE, message=FALSE}
+# Load common functions and variables
+source('../shared/common.R', chdir=T)
+source('../shared/tokenizer.R', chdir=T)
+
+# Library dependencies
+library(data.table)
+library(dplyr)
+library(doParallel)
+```
+
+
+###Pre-requisites
+
+Over this document we'll work over the files generated on the previous process which is documented on the report *1_getting_cleaning_data*.
+
+At this point we have a set of files with ngram frequencies for all our datasources of the `en_US` locale, we have already noted that such frequencies are distributed exponentially, in this report we'll analyse insights about our ngrams with the porpuse to generate a Language Model robust enough to be used in our prediction stage.
+
+##Ngram probabilities
+
+<TODO: Add reference/support documentation about ngram probalities>
+
+Since our prediction task is intended for english language, when loading ngram frecuencies we are going to ignore any ngram that includes non alphanumeric characters, also we'll ignore ngrams including our special end-of-sentence indicator `<\s>` because we don't expect to predict such thing. I worth nothing that having such indicator is helpful for other types of analysis and to generate automatic sentence builders; This ignored elements will remain in our ngram frecuency files in case are needed later.
+
+***
+###
+WORK IN PROGRESS
+
+TODO: Format and comment following block of code, is temporarily here as development notepad.
+
+###
+***
+
+```{r, eval=FALSE}
+
+#--- Wordlist filtering
+wordlist <- data.table(read.delim(pipe(paste("grep -E -v '[^a-z]' ", filePath('wordlist.txt', 'en_US'))), sep=' ', col.names = c('word'), header=F, stringsAsFactors=F))
+
+
+# Run after 'follows' attr exists on unigrams to identify counts of missings
+misspells <- data.table(setdiff(all_unigrams[,token1], wordlist$word))
+colnames(misspells) <- c('word')
+misspells$count <- all_unigrams[token1 %in% misspells[1], count]
+misspells$follows <- all_unigrams[token1 %in% misspells[1], follows]
+length(misspells[follows>1, word])
+#---
+
+### UNIGRAMS
+
+all_unigrams <- data.table(read.delim(pipe(paste("grep -E -v '[^a-z0-9 <>]' ", filePath('all_sources.1grams', 'en_US'))), sep=' ', col.names = c('count', 'token1'), header=F, stringsAsFactors=F), key="token1")
+
+# Create 'found' wordlist
+found <- data.table(c(intersect(all_unigrams[,token1], wordlist$word), '<s>'))
+colnames(found) <- c('word')
+## Clean freq tables
+all_unigrams <- all_unigrams[token1 %in% found$word,]
+setkey(all_unigrams, 'token1')
+#saveRDS(all_unigrams, filePath("all_unigrams.rds", "en_US"))
+
+### BIGRAMS
+
+all_bigrams <- data.table(read.delim(pipe(paste("grep -E -v '[^a-z0-9 <>]' ", filePath('all_sources.2grams', 'en_US'))), sep=' ', col.names = c('count', 'token1', 'token2'), header=F, stringsAsFactors=F), key="token1")
+# Clean freq tables
+all_bigrams <- filter(all_bigrams, token1 %in% found$word, token2 %in% found$word)
+setkey(all_bigrams, 'token1')
+#saveRDS(all_bigrams, filePath("all_bigrams.rds", "en_US"))
+
+### UNIGRAM CONTINUATION METRIC
+
+all_unigrams$follows <- 0
+all_unigrams <- arrange(all_unigrams, token1)
+all_bigrams <- arrange(all_bigrams, token1)
+cont_table <- table(all_bigrams[, token2])
+# NOTE: 1,2-gram tables should be sorted by 'token1' before continue
+all_unigrams[token1 %in% names(cont_table)]$follows = as.numeric(cont_table)
+rm(cont_table)
+all_unigrams$cont_metric <- ifelse(all_unigrams$follows==0, 0, log(all_unigrams$follows))
+all_unigrams <- arrange(all_unigrams, desc(cont_metric))
+saveRDS(all_unigrams, filePath("all_unigrams.rds", "en_US"))
+
+### TRIGRAMS
+
+all_trigrams <- data.table(read.delim(pipe(paste("grep -E -v '[^a-z0-9 <>]' ", filePath('all_sources.3grams', 'en_US'))), sep=' ', col.names = c('count', 'token1', 'token2', 'token3'), header=F, stringsAsFactors=F), key="token1")
+# Clean freq tables
+all_trigrams <- filter(all_trigrams, token1 %in% found$word, token2 %in% found$word, token3 %in% found$word)
+setkey(all_trigrams, 'token2')
+setkey(all_trigrams, 'token1')
+#saveRDS(all_trigrams, filePath("all_trigrams.rds", "en_US"))
+
+### BIGRAM CONTINUATION METRICS
+
+all_trigrams$t2t3 <- paste(all_trigrams$token2, all_trigrams$token3)
+all_bigrams$t1t2 <- paste(all_bigrams$token1, all_bigrams$token2)
+all_bigrams <- arrange(all_bigrams, t1t2)
+all_trigrams <- arrange(all_trigrams, t2t3)
+all_bigrams$follows <- 0
+cont_table <- table(all_trigrams[, t2t3])
+# NOTE: 2,3-gram tables should be sorted by merged tokens before continue
+all_bigrams[t1t2 %in% names(cont_table)]$follows = as.numeric(cont_table)
+rm(cont_table)
+# Remove low freq bigrams with high cont_metric on last token
+tmp_1grams <- select(all_unigrams, token1, cont_metric)
+colnames(tmp_1grams) <- c('token1', 't2_cont_metric')
+all_bigrams <- merge(all_bigrams, tmp_1grams, by.x='token2', by.y='token1')
+rm(tmp_1grams)
+#all_bigrams <- all_bigrams[!(follows==1 & count==1 & t2_cont_metric > 1), ]
+# Compute continuation metric of relevant bigrams
+
+#all_bigrams$cont_metric <- ifelse(all_bigrams$follows==0, 0, log(all_bigrams$count/all_bigrams$follows)) + log(all_bigrams$t2_cont_metric)
+
+all_bigrams$cont_metric <- ifelse(all_bigrams$follows==0, 0, log(all_bigrams$follows)) + all_bigrams$t2_cont_metric
+
+all_bigrams <- arrange(all_bigrams, desc(cont_metric))
+saveRDS(all_bigrams, filePath("all_bigrams.rds", "en_US"))
+
+### QUADGRAMS
+
+all_quadgrams <- data.table(read.delim(pipe(paste("grep -E -v '[^a-z0-9 <>]' ", filePath('all_sources.4grams', 'en_US'))), sep=' ', col.names = c('count', 'token1', 'token2', 'token3', 'token4'), header=F, stringsAsFactors=F), key="token1")
+# Clean freq tables
+all_quadgrams <- filter(all_quadgrams, token1 %in% found$word, token2 %in% found$word, token3 %in% found$word, token4 %in% found$word)
+setkey(all_quadgrams, 'token3')
+setkey(all_quadgrams, 'token2')
+setkey(all_quadgrams, 'token1')
+#saveRDS(all_quadgrams, filePath("all_quadgrams.rds", "en_US"))
+
+### TRIGRAM CONTINUATION METRICS
+
+all_quadgrams$t2t3t4 <- paste(all_quadgrams$token2, all_quadgrams$token3, all_quadgrams$token4)
+all_trigrams$t1t2t3 <- paste(all_trigrams$token1, all_trigrams$token2, all_trigrams$token3)
+all_trigrams <- arrange(all_trigrams, t1t2t3)
+all_quadgrams <- arrange(all_quadgrams, t2t3t4)
+all_trigrams$follows <- 0
+cont_table <- table(all_quadgrams[, t2t3t4])
+# NOTE: 3,4-gram tables should be sorted by merged tokens before continue
+all_trigrams[t1t2t3 %in% names(cont_table)]$follows = as.numeric(cont_table)
+rm(cont_table)
+# Remove low freq trigrams with high cont_metric on last tokens
+tmp_1grams <- select(all_unigrams, token1, cont_metric)
+colnames(tmp_1grams) <- c('token1', 't3_cont_metric')
+all_trigrams <- merge(all_trigrams, tmp_1grams, by.x='token3', by.y='token1')
+rm(tmp_1grams)
+tmp_2grams <- select(all_bigrams, t1t2, cont_metric)
+colnames(tmp_2grams) <- c('t1t2', 't2t3_cont_metric')
+all_trigrams <- merge(all_trigrams, tmp_2grams, by.x='t2t3', by.y='t1t2')
+rm(tmp_2grams)
+#all_trigrams <- all_trigrams[!(follows==1 & count==1 & t2t3_cont_metric > 1), ]
+# Compute continuation metric of relevant trigrams
+
+#all_trigrams$cont_metric <- ifelse(all_trigrams$follows==0, 0, log(all_trigrams$count/all_trigrams$follows)) + all_trigrams$t2t3_cont_metric + log(all_trigrams$t3_cont_metric)
+
+#all_trigrams$cont_metric <- ifelse(all_trigrams$follows==0, 0, log(all_trigrams$count/all_trigrams$follows)) + all_trigrams$t2t3_cont_metric
+
+all_trigrams$cont_metric <- ifelse(all_trigrams$follows==0, 0, log(all_trigrams$follows)) + all_trigrams$t2t3_cont_metric
+
+all_trigrams <- arrange(all_trigrams, desc(cont_metric))
+saveRDS(all_trigrams, filePath("all_trigrams.rds", "en_US"))
+
+### QUADGRAM CONTINUATION METRICS
+
+# Remove low freq quadgrams with high cont_metric on last tokens
+tmp_1grams <- select(all_unigrams, token1, cont_metric)
+colnames(tmp_1grams) <- c('token1', 't4_cont_metric')
+all_quadgrams <- merge(all_quadgrams, tmp_1grams, by.x='token4', by.y='token1')
+rm(tmp_1grams)
+
+tmp_3grams <- select(all_trigrams, t1t2t3, cont_metric)
+colnames(tmp_3grams) <- c('t1t2t3', 't2t3t4_cont_metric')
+all_quadgrams <- merge(all_quadgrams, tmp_3grams, by.x='t2t3t4', by.y='t1t2t3')
+rm(tmp_3grams)
+
+#all_quadgrams <- all_quadgrams[!(follows==1 & count==1 & t2t3t4_cont_metric > 1), ]
+
+# Compute continuation metric of relevant quadgrams
+#all_quadgrams$cont_metric <- log(all_quadgrams$count) + 1/(all_quadgrams$t4_cont_metric + all_quadgrams$t2t3t4_cont_metric)
+
+#all_quadgrams$cont_metric <- log(all_quadgrams$count) + ifelse(all_quadgrams$t2t3t4_cont_metric==0, 0, 1/all_quadgrams$t2t3t4_cont_metric) + 1/log(all_quadgrams$t4_cont_metric)
+
+all_quadgrams$cont_metric <- log(all_quadgrams$count) + ifelse(all_quadgrams$t2t3t4_cont_metric==0, 1, 1/all_quadgrams$t2t3t4_cont_metric)
+
+all_quadgrams <- arrange(all_quadgrams, desc(cont_metric))
+#all_quadgrams <- all_quadgrams[cont_metric >= 1, ]
+saveRDS(all_quadgrams, filePath("all_quadgrams.rds", "en_US"))
+
+# RELOAD all_* RDS files
+
+rm(all_unigrams)
+rm(all_bigrams)
+rm(all_trigrams)
+rm(all_quadgrams)
+all_unigrams <- readRDS(filePath("all_unigrams.rds", "en_US"))
+all_bigrams <- readRDS(filePath("all_bigrams.rds", "en_US"))
+all_trigrams <- readRDS(filePath("all_trigrams.rds", "en_US"))
+all_quadgrams <- readRDS(filePath("all_quadgrams.rds", "en_US"))
+
+# SORTING FOR PREDICTION (DEV)
+
+all_unigrams <- arrange(all_unigrams, desc(cont_metric))
+all_bigrams <- arrange(all_bigrams, desc(cont_metric))
+all_trigrams <- arrange(all_trigrams, desc(cont_metric))
+all_quadgrams <- arrange(all_quadgrams, desc(cont_metric))
+
+# FILTERED NGRAM DATASETS
+
+# UNIGRAMGS
+
+sub_unigrams <- all_unigrams %>% select(c(token=token1, metric=cont_metric))
+setkey(sub_unigrams, 'token')
+sub_unigrams <- arrange(sub_unigrams, desc(metric))
+saveRDS(sub_unigrams, filePath("sub_unigrams.rds", "en_US"))
+
+# BIGRAMS
+
+sub_bigrams <- all_bigrams %>% 
+    mutate(token=cksum(token1), cont_metric=cont_metric * 0.001) %>%
+    select(c(token, word=token2, metric=cont_metric))
+sub_bigrams <- arrange(sub_bigrams, desc(metric))
+# Trim to size ...
+bi_max <- as.numeric(length(sub_bigrams[,metric]) * ((100 * (1024**2))/object.size(sub_bigrams)))
+sub_bigrams <- sub_bigrams[1:bi_max, ]
+# keep only up to 100 of each token group
+sub_bigrams <- arrange(sub_bigrams, desc(metric))
+sub_bigrams <- sub_bigrams[, head(.SD, 100), by=token]
+# Keys and indexes
+setkey(sub_bigrams, 'token')
+sub_bigrams <- arrange(sub_bigrams, desc(metric))
+saveRDS(sub_bigrams, filePath("sub_bigrams.rds", "en_US"))
+
+# TRIGRAMS
+
+sub_trigrams <- all_trigrams %>% 
+    mutate(token=cksum(paste(token1, token2, sep=' ')), cont_metric=cont_metric * 0.01) %>%
+    select(c(token, word=token3, metric=cont_metric))
+sub_trigrams <- arrange(sub_trigrams, desc(metric))
+# Trim to size ...
+tri_max <- as.numeric(length(sub_trigrams[,metric]) * ((200 * (1024**2))/object.size(sub_trigrams)))
+sub_trigrams <- sub_trigrams[1:tri_max, ]
+# keep only up to 100 of each token group
+sub_trigrams <- arrange(sub_trigrams, desc(metric))
+sub_trigrams <- sub_trigrams[, head(.SD, 100), by=token]
+# Keys and indexes
+setkey(sub_trigrams, 'token')
+sub_trigrams <- arrange(sub_trigrams, desc(metric))
+saveRDS(sub_trigrams, filePath("sub_trigrams.rds", "en_US"))
+
+# QUADGRAMS
+
+sub_quadgrams <- all_quadgrams %>%
+    mutate(token=cksum(paste(token1, token2, token3, sep=' '))) %>% 
+    select(c(token, word=token4, metric=cont_metric))
+sub_quadgrams <- arrange(sub_quadgrams, desc(metric))
+# Trim to size ...
+quad_max <- as.numeric(length(sub_quadgrams[,metric]) * ((200 * (1024**2))/object.size(sub_quadgrams)))
+sub_quadgrams <- sub_quadgrams[1:quad_max, ]
+# keep only up to 100 of each token group
+sub_quadgrams <- arrange(sub_quadgrams, desc(metric))
+sub_quadgrams <- sub_quadgrams[, head(.SD, 100), by=token]
+# Keys and indexes
+setkey(sub_quadgrams, 'token')
+sub_quadgrams <- arrange(sub_quadgrams, desc(metric))
+saveRDS(sub_quadgrams, filePath("sub_quadgrams.rds", "en_US"))
+
+
+
+
+View(filter(all_quadgrams, token1=='a', token2=='case', token3=='of'))
+View(filter(all_trigrams, token1=='case', token2=='of'))
+View(filter(all_bigrams, token1=='of'))
+
+View(filter(sub_quadgrams, token=cksum(paste('a', 'case', 'of'))))
+
+
+View(word_predictions_dev(c('a','case', 'of'), 100, 0))
+View(word_predictions_dev(c('date','at', 'the'), 100, 0))
+View(word_predictions_dev(c('struggling','but', 'the'), 100, 0))
+View(word_predictions_dev(c('in','quite', 'some'), 100, 0))
+View(word_predictions_dev(c('be','on', 'my'), 100, 0))
+View(word_predictions_dev(c('faith','during', 'the'), 100, 0))
+View(word_predictions_dev(c('with','his', 'little'), 100, 0))
+View(word_predictions_dev(c('to','take', 'a'), 100, 0))
+View(word_predictions_dev(c('bruises','from', 'playing'), 100, 0))
+View(word_predictions_dev(c('me','about', 'his'), 100, 0))
+
+
+print(object.size(sub_unigrams), units="auto")
+print(object.size(sub_bigrams), units="auto")
+print(object.size(sub_trigrams), units="auto")
+print(object.size(sub_quadgrams), units="auto")
+
+
+summary(all_unigrams$cont_metric)
+summary(all_bigrams$cont_metric)
+summary(all_trigrams$cont_metric)
+summary(all_quadgrams$cont_metric)
+
+summary(sub_unigrams$metric)
+summary(sub_bigrams$metric)
+summary(sub_trigrams$metric)
+summary(sub_quadgrams$metric)
+
+# PROOF OF NO SPACE SAVING AFTER HASHING
+print(object.size(sub_trigrams[1:1000, token]), units="auto")
+print(object.size((sapply(sub_trigrams[1:1000, token], digest, algo="crc32", serialize=TRUE, USE.NAMES = F))), units="auto")
+
+sentence_maker_final('man cave myth', size=50, top=5)
+
+
+```
+
+
+***
+
+
+###Notes:
+Refer to code file `common.R` for details on custom variables and functions used through this document.
+
+
+
+###References:
+https://class.coursera.org/nlp/lecture/14
+https://class.coursera.org/nlp/lecture/32
+
+# Tokenization and Ngrams
+http://paulklemm.com/zenf/blog/2015/02/20/run-rjava-with-rstudio-under-osx-10-dot-10/
+http://gibrown.com/2013/01/26/unix-bi-grams-tri-grams-and-topic-modeling/
+http://stackoverflow.com/questions/1251999/how-can-i-replace-a-newline-n-using-sed
+http://english.boisestate.edu/johnfry/files/2013/04/bigram-2x2.pdf
+
+# Wordlists
+http://dreamsteep.com/projects/the-english-open-word-list.html
+http://www-01.sil.org/linguistics/wordlists/english/
+https://github.com/dwyl/english-words
+
+# Hash tables
+http://www.r-bloggers.com/hash-table-performance-in-r-part-i/
+http://jeffreyhorner.tumblr.com/post/116325104028/hash-table-performance-in-r-part-ii-in-part-i
+http://www.r-bloggers.com/hash-table-performance-in-r-part-iiiin-part-iof-this-series-i-explained-how-r-hashed/
+
+# Checksum
+https://cran.r-project.org/web/packages/bitops/bitops.pdf
+
+# Shiny
+http://shiny.rstudio.com/gallery/word-cloud.html
+
+# Stupid backoff
+http://www.aclweb.org/anthology/D07-1090.pdf
+
+# Kneser-Ney
+http://www.foldl.me/2014/kneser-ney-smoothing/
+https://en.wikipedia.org/wiki/Kneser%E2%80%93Ney_smoothing
+http://nlp.stanford.edu/~wcmac/papers/20050421-smoothing-tutorial.pdf
+https://github.com/smilli/kneser-ney
+http://smithamilli.com/blog/kneser-ney/
+
+# R packages ans misc
+http://personal.colby.edu/personal/m/mgimond/RIntro/04_Manipulating_data_tables.html#adding-columns
+https://stat.ethz.ch/R-manual/R-devel/library/base/html/regex.html
+https://cran.r-project.org/web/packages/tm/vignettes/tm.pdf
+https://cran.r-project.org/web/packages/tm/index.html
+https://cran.r-project.org/web/views/NaturalLanguageProcessing.html
+http://adv-r.had.co.nz/memory.html
+https://stat.ethz.ch/R-manual/R-devel/library/base/html/pmatch.html
+
+# Log probabilities
+http://blog.smola.org/post/987977550/log-probabilities-semirings-and-floating-point
+

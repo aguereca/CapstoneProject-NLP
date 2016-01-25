@@ -1,5 +1,5 @@
 # Source: https://en.wikipedia.org/wiki/Wikipedia:List_of_English_contractions
-# Horizontal matrix of common english contractions
+# Horizontal matrix of common english contractions (and possessives)
 contractions <- matrix(
 c(
     c("ain't", "am not"),
@@ -24,12 +24,12 @@ c(
     c("how'd", "how would"),
     c("how'll", "how will"),
     c("how's", "how is"),
-    c("I'd", "I would"),
-    c("I'd've", "I would have"),
-    c("I'll", "I will"),
-    c("I'm", "I am"),
-    c("I've", "I have"),
-    c("I'ven't", "I have not"),
+    c("i'd", "i would"),
+    c("i'd've", "i would have"),
+    c("i'll", "i will"),
+    c("i'm", "i am"),
+    c("i've", "i have"),
+    c("i'ven't", "i have not"),
     c("isn't", "is not"),
     c("it'd", "it would"),
     c("it'd've", "it would have"),
@@ -132,14 +132,18 @@ c(
     c("you're", "you are"),
     c("you'ren't", "you are not"),
     c("you've", "you have"),
-    c("you'ven't", "you have not")
+    c("you'ven't", "you have not"),
+    c("'s ", " "),      # Singular possessive
+    c("s' ", "s ")    # Plural possessive
 ), nrow=2)
 
 expand_contractions <- function(text) {
     # Normalize apostrophes
     text <- gsub('’', "'", text)
-    for (col in seq(ncol(contractions))) {
-        text <- gsub(contractions[1, col], contractions[2, col], text)
+    if (length(grep("'", text)) > 0) {
+        for (col in seq(ncol(contractions))) {
+            text <- gsub(contractions[1, col], contractions[2, col], text)
+        }
     }
     return(text)
 }

@@ -113,12 +113,11 @@ Tokenized datasets are then written into output file, this is how to tokenize so
 
 ```{r}
 for (media in sourcesMedia) {
-#for (media in c('blogs')) {
-    if (!file.exists(filePath(paste(media,'tokens', sep='.'), 'en_US'))) {
+    if (!file.exists(filePath(paste(media,'lines.all', sep='.'), 'en_US'))) {
         # Time tokenization to have a reference of processing duration
         print(paste(media, system.time(
             {tokenizer(filePath(paste(media,'txt', sep='.'), 'en_US'),
-                       filePath(paste(media,'tokens', sep='.'), 'en_US'))}
+                       filePath(paste(media,'lines.all', sep='.'), 'en_US'))}
             ), sep=' - '))
     }
 }
@@ -126,7 +125,7 @@ for (media in sourcesMedia) {
 
 Lets see a sample result of our tokenization:
 ```{r}
-readLines(filePath('news.tokens', 'en_US'), 10)
+readLines(filePath('news.lines.all', 'en_US'), 10)
 ```
 
 Results are promising despite of letter `s` being considered as a word; This and other residual issues will be taken care of on the next processing stages.
@@ -137,6 +136,21 @@ In the case of profanity detection, we have chosen to detect it after the workin
 
 Our tokenization approach is far from perfect, a careful reader might have noticed that we have ignored language features as abrevations and neglected any effort of entity extraction which otherwise would lead to a higher quality tokenized set. Our reasoning has been that while this efforts might yield to better prediction, we estimate the quantitative improvement of them as negligible for our purposes; This asumptions should be (relatively) easily validated once our prediction approach is completed.
 
+
+###Partitioning
+
+Having files with cleanly defined sententences we'll split our data source into training and test sets. 
+For testing we are going to use the last 100K lines of each `lines.all` file, we find no need to randomize the lines since our data sources are already randomized. 
+
+We use this bash code to split our data and generate respective `*.lines.train` and `*.lines.test` files for each media type. On subsecuent sections we'll operate on the train data set unless otherwise indicated.
+
+```{bash, eval=FALSE}
+# bash code should be runned from localized data folder
+all_media=("blogs" "news" "twitter") && 
+for media in ${all_media[@]}; do test_size=100000 && ghead -n -$test_size en_US.$media.lines.all > en_US.$media.lines.train && 
+tail -n $test_size en_US.$media.lines.all > en_US.$media.lines.test; done && 
+unset all_media && unset test_size
+```
 
 ###Term frequencies
 
@@ -198,7 +212,7 @@ quadrigram_counts <- matrix(unlist(strsplit(trimws(quadrigram_counts), ' ')), nr
 ```
 
 
-Most of the files seem to have tens of million of ngrams, their frequency distribution is expected to be exponential, for validation lets plot hitograms of their counts:
+Most of the files seem to have tens of million of ngrams, their frequency distribution is expected to be exponential, for validation lets plot histograms of their counts:
 
 ```{r, cache=TRUE, fig.height=5, fig.width=10, fig.align='center'}
 par(mfcol = c(1,4))

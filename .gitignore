@@ -17,4 +17,5 @@ data/*.zip
 data/final/*
 
 # Cache
-*_cache/*
+*_cache*
+.Rproj.user

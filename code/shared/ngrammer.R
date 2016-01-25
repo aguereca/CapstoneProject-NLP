@@ -41,7 +41,7 @@ ngramifyAll <- function(n_lines=-1) {
                          .verbose = TRUE) %dopar% {
     #for (i in seq(3)) {
         media <- sourcesMedia[i]
-        all_lines = readLines(filePath(paste(media,'tokens', sep='.'), 'en_US'), n_lines, encoding='UTF-8')
+        all_lines = readLines(filePath(paste(media,'lines', sep='.'), 'en_US'), n_lines, encoding='UTF-8')
         stats <- c()
         for (j in seq(4)) {
             #foreach(j=1:4) %dopar% {
@@ -84,22 +84,22 @@ Comment(
 cd data/final/en_US
 
 # 1.-  Add sentence separators to tokenized data, and split it into files of 500K lines
-cat en_US.blogs.tokens | sed -e 's/$/ <\\s>/g' | sed -e 's/^/<s> /g' > s.blogs.tokens && split -a 1 -l 500000 s.blogs.tokens s.blogs.tokens.p && rm s.blogs.tokens
+cat en_US.blogs.lines | sed -e 's/$/ <\\s>/g' | sed -e 's/^/<s> /g' > s.blogs.lines && split -a 1 -l 500000 s.blogs.lines s.blogs.lines.p && rm s.blogs.lines
 
 # 2.- Using script 'ngram.sh' run this command: (It takes ~28hr on a MacBook Pro 2013, hence uses 7 cores)
-find . -name "s.blogs.tokens.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 1 > %.tf.1" && 
-find . -name "s.blogs.tokens.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 2 > %.tf.2" && 
-find . -name "s.blogs.tokens.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 3 > %.tf.3" && 
-find . -name "s.blogs.tokens.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 4 > %.tf.4"
+find . -name "s.blogs.lines.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 1 > %.tf.1" && 
+find . -name "s.blogs.lines.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 2 > %.tf.2" && 
+find . -name "s.blogs.lines.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 3 > %.tf.3" && 
+find . -name "s.blogs.lines.p?" | xargs -n 1 -P 7 -I % time -p sh -c "time -p cat % | ./ngram.sh 4 > %.tf.4"
 
 # 3.- Aggregate ngram counts of all split files into one by ngram length:
-sort -rn s.blogs.tokens.p?.tf.1 | awk '{arr[$2]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.1
-sort -rn s.blogs.tokens.p?.tf.2 | awk '{arr[$2" "$3]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.2
-sort -rn s.blogs.tokens.p?.tf.3 | awk '{arr[$2" "$3" "$4]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.3
-sort -rn s.blogs.tokens.p?.tf.4 | awk '{arr[$2" "$3" "$4" "$5]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.4
+sort -rn s.blogs.lines.p?.tf.1 | awk '{arr[$2]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.1
+sort -rn s.blogs.lines.p?.tf.2 | awk '{arr[$2" "$3]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.2
+sort -rn s.blogs.lines.p?.tf.3 | awk '{arr[$2" "$3" "$4]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.3
+sort -rn s.blogs.lines.p?.tf.4 | awk '{arr[$2" "$3" "$4" "$5]+=$1} END {for (i in arr) {print arr[i], i}}' | sort -rn > s.blogs.tokens.tf.4
 
 # 4.- Remove temporal ngram counts of split files:
-rm s.blogs.tokens.p?.tf.?
+rm s.blogs.lines.p?.tf.?
 
 # Final ngram counts will be in the files: 
 #     s.blogs.tokens.tf.1, s.blogs.tokens.tf.2, s.blogs.tokens.tf.3, s.blogs.tokens.tf.4
@@ -127,18 +127,19 @@ Comment(
 cd data/final/en_US
 
 # 1.- Run following command, for each media source (update 'mymedia' variable for each):
-mymedia=twitter &&
-cat en_US.$mymedia.tokens | sed -e 's/$/ <\\s>/g' | sed -e 's/^/<s> /g' | sed G | tr ' ' '\n' > s.$mymedia.tokens && 
-time -p cat s.$mymedia.tokens | sort | uniq -c | sort -rn > en_US.$mymedia.1grams && 
-time -p paste -d ',' <(cat s.$mymedia.tokens ) <(cat s.$mymedia.tokens | tail -n+2) | grep -v -e "^," | grep -v -e ",$" | tr ',' ' ' | sort | uniq -c | sort -rn > en_US.$mymedia.2grams && 
-time -p paste -d ',' <(cat s.$mymedia.tokens ) <(cat s.$mymedia.tokens | tail -n+2) <(cat s.$mymedia.tokens | tail -n+3) | grep -v -e "^," | grep -v -e ",$" | tr ',' ' ' | sort | uniq -c | sort -rn > en_US.$mymedia.3grams && 
-time -p paste -d ',' <(cat s.$mymedia.tokens ) <(cat s.$mymedia.tokens | tail -n+2) <(cat s.$mymedia.tokens | tail -n+3) <(cat s.$mymedia.tokens | tail -n+4) | grep -v -e "^," | grep -v -e ",$" | tr ',' ' ' | sort | uniq -c | sort -rn > en_US.$mymedia.4grams && 
-rm s.$mymedia.tokens && unset mymedia
+mymedia=blogs &&
+cat en_US.$mymedia.lines.train | sed -e 's/$/ <\\s>/g' | sed -e 's/^/<s> /g' | sed G | tr ' ' '\n' > s.$mymedia.lines && 
+time -p cat s.$mymedia.lines | sort | uniq -c | sort -rn > en_US.$mymedia.1grams && 
+time -p paste -d ',' <(cat s.$mymedia.lines ) <(cat s.$mymedia.lines | tail -n+2) | grep -v -e "^," | grep -v -e ",$" | tr ',' ' ' | sort | uniq -c | sort -rn > en_US.$mymedia.2grams && 
+time -p paste -d ',' <(cat s.$mymedia.lines ) <(cat s.$mymedia.lines | tail -n+2) <(cat s.$mymedia.lines | tail -n+3) | grep -v -e "^," | grep -v -e ",$" | tr ',' ' ' | sort | uniq -c | sort -rn > en_US.$mymedia.3grams && 
+time -p paste -d ',' <(cat s.$mymedia.lines ) <(cat s.$mymedia.lines | tail -n+2) <(cat s.$mymedia.lines | tail -n+3) <(cat s.$mymedia.lines | tail -n+4) | grep -v -e "^," | grep -v -e ",$" | tr ',' ' ' | sort | uniq -c | sort -rn > en_US.$mymedia.4grams && 
+rm s.$mymedia.lines && unset mymedia
 
 # 2.- Ngram frequencies for each media can be found in files like: blogs.1grams, blogs.2grams, blogs.3grams, blogs.4grams 
 
-# 3.- Ignore sentence separators on unigrams
-all_media=("blogs" "news" "twitter") && for media in ${all_media[@]}; do sed -i '/[>| ]$/d' en_US.$media.1grams; done && unset all_media
+## 3.- Ignore space as token on unigrams
+all_media=("blogs" "news" "twitter") && for media in ${all_media[@]}; do sed -i '/[ ]$/d' en_US.$media.1grams; done && unset all_media
+##all_media=("blogs" "news" "twitter") && for media in ${all_media[@]}; do sed -i '/[>| ]$/d' en_US.$media.1grams; done && unset all_media
 
 # 4.- Remove tokens with sencence separators in wrong place, on all of ngram frecuency files.
 #     (ngrams including sentence separators should have only <s> at beginning or <\s> at end, and no both consecutive)
